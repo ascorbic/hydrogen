@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
   push:
     branches: ['v1.x-2022-07']
+  pull_request:
+    branches:
+      - 'v[0-9].x-[0-9]+-[0-9]+'
 
 concurrency:
   group: deployments-${{ github.head_ref }}
@@ -55,3 +58,53 @@ jobs:
       - name: Run health check
         run: |
           yarn ts-node scripts/health-check.ts https://template-default.hydrogen-devs.workers.dev/
+  deploy_netlify:
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'ascorbic' }}
+    name: Deploy to Netlify
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16
+          cache: 'yarn'
+
+      - name: Install the packages
+        run: yarn install --frozen-lockfile --ignore-engines
+
+      - name: Build Hydrogen
+        run: yarn workspace @shopify/hydrogen build
+
+      - name: Make updates for Netlify Edge Functions runtime
+        working-directory: ./templates/template-hydrogen-default
+        run: |
+          cp ../../.github/deployments/netlify/* .
+          yarn add @netlify/hydrogen-platform
+
+      - name: Build for Netlify Functions
+        working-directory: ./templates/template-hydrogen-default
+        run: |
+          yarn build:client
+          yarn cross-env WORKER=true vite build --ssr @netlify/hydrogen-platform/handler
+
+      - name: Install Netlify CLI
+        run: |
+          yarn global add netlify-cli
+
+      - name: Deploy to Netlify
+        id: netlify-deploy
+        working-directory: ./templates/template-hydrogen-default
+        run: |
+          netlify deploy --build --json | jq -r '.deploy_url' > deploy.txt
+          echo "::set-output name=deploy-url::$(cat deploy.txt)"
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        timeout-minutes: 1
+
+      - name: Run health check
+        run: |
+          yarn ts-node scripts/health-check.ts ${{steps.netlify-deploy.outputs.deploy-url}}
